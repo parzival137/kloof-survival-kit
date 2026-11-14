@@ -69,7 +69,7 @@ var pendingRows=[],liveRows=[],armed='';
 
 async function refresh(){
   var r=await sb.from('papers').select('*').order('created_at',{ascending:false});
-  if(r.error){setAdminMsg('Could not load. Are you signed in as the admin?','err');return;}
+  if(r.error){setAdminMsg('Could not load: '+(r.error.message||'Are you signed in as the admin?'),'err');return;}
   pendingRows=r.data.filter(function(p){return p.status==='pending';});
   liveRows=r.data.filter(function(p){return p.status==='approved';});
   await renderPending();
@@ -119,11 +119,11 @@ async function approve(id){
   var title=($('#t-'+id).value||'').trim()||p.title;
   setAdminMsg('Approving…');
   var dl=await sb.storage.from('incoming').download(p.file_path);
-  if(dl.error){setAdminMsg('Could not read the file. Try again.','err');return;}
+  if(dl.error){setAdminMsg('Could not read the file: '+(dl.error.message||'Try again.'),'err');return;}
   var up=await sb.storage.from('public-papers').upload(p.file_path,dl.data,{contentType:p.content_type,upsert:true});
-  if(up.error){setAdminMsg('Could not publish the file. Try again.','err');return;}
+  if(up.error){setAdminMsg('Could not publish the file: '+(up.error.message||'Try again.'),'err');return;}
   var u=await sb.from('papers').update({status:'approved',title:title}).eq('id',id);
-  if(u.error){setAdminMsg('Published the file but could not update its status.','err');return;}
+  if(u.error){setAdminMsg('Published the file but could not update its status: '+(u.error.message||''),'err');return;}
   await sb.storage.from('incoming').remove([p.file_path]);
   setAdminMsg('Approved: '+title,'ok');
   await refresh();
