@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kloof High Survival Kit</title>
+<meta name="description" content="Past papers, memos and study notes for Kloof High students.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="stripe" aria-hidden="true"></div>
+<div class="wrap">
+  <header class="head">
+    <p class="eyebrow">Past papers · Memos · Study notes</p>
+    <h1>Kloof High<br>Survival Kit</h1>
+    <p class="lede">Everything you need to practise before the exam, in one place. Pick your grade, find your subject, open the paper.</p>
+    <p class="count" id="count"></p>
+  </header>
+
+  <div id="setup" class="setup" hidden>
+    <strong>Setup needed.</strong> Open <code>config.js</code> and paste your Supabase project URL and anon key. The README explains where to find them.
+  </div>
+
+  <section class="filters" aria-label="Filters">
+    <div class="field grow"><label for="q">Search</label><input id="q" type="search" placeholder="Maths, June, Paper 2" autocomplete="off"></div>
+    <div class="field"><span class="lab" id="gradeLab">Grade</span><div class="chips" id="grades" role="group" aria-labelledby="gradeLab"></div></div>
+    <div class="field"><label for="fs">Subject</label><select id="fs"></select></div>
+    <div class="field"><label for="fk">Type</label><select id="fk"></select></div>
+    <div class="field"><label for="fy">Year</label><select id="fy"></select></div>
+  </section>
+
+  <p class="result" id="result" role="status"></p>
+  <ul class="list" id="list"></ul>
+
+  <section class="panel" id="share" aria-labelledby="shareTitle">
+    <h2 class="sec" id="shareTitle">Add a paper</h2>
+    <p class="note">Got a past paper, memo or set of notes? Send it in. A moderator checks every file before it appears here.</p>
+    <form id="shareForm">
+      <div class="field full"><label for="file">File (PDF, PNG, JPG or WEBP, up to 15 MB)</label><input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" required></div>
+      <div class="field full"><label for="title">Title</label><input id="title" type="text" maxlength="120" placeholder="Mathematics Paper 1 June Exam" required></div>
+      <div class="field"><label for="subj">Subject</label><select id="subj"></select></div>
+      <div class="field"><label for="grade">Grade</label><select id="grade"></select></div>
+      <div class="field"><label for="year">Year</label><select id="year"></select></div>
+      <div class="field"><label for="kind">Type</label><select id="kind"></select></div>
+      <div class="field"><label for="detail">Detail (optional)</label><input id="detail" type="text" maxlength="60" placeholder="Paper 1, June exam"></div>
+      <div class="field"><label for="by">Your name or class (optional)</label><input id="by" type="text" maxlength="60" placeholder="11B"></div>
+      <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" type="text" tabindex="-1" autocomplete="off"></div>
+      <div class="full"><button class="btn" id="sendBtn" type="submit">Send for review</button></div>
+      <p class="msg full" id="msg" role="status"></p>
+    </form>
+  </section>
+  <p class="foot">Only upload papers you are allowed to share. Files are checked before they go live.</p>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+(function(){
+'use strict';
+var SUBJECTS=['English Home Language','English First Additional Language','Afrikaans First Additional Language','isiZulu Home Language','isiZulu First Additional Language','Mathematics','Mathematical Literacy','Physical Sciences','Life Sciences','Natural Sciences','Geography','History','Accounting','Business Studies','Economics','Economic and Management Sciences','Computer Applications Technology','Information Technology','Tourism','Consumer Studies','Engineering Graphics and Design','Technology','Life Orientation','Other'];
+var KINDS=['Question paper','Memo','Study notes','Exam guide'];
+var GRADES=['8','9','10','11','12'];
+var MIME={pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'};
+var MAX_BYTES=15*1024*1024;
+
+var cfg=window.KSK_CONFIG||{};
+var ready=!!(cfg.SUPABASE_URL&&cfg.SUPABASE_ANON_KEY&&String(cfg.SUPABASE_URL).indexOf('PASTE')<0&&window.supabase);
+var sb=ready?window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY):null;
+
+var papers=[];
+var filt={q:'',grade:'',subject:'',kind:'',year:''};
+
+function $(s){return document.querySelector(s);}
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function uniq(a){var o=[];a.forEach(function(v){if(o.indexOf(v)<0){o.push(v);}});return o;}
+function fmtSize(b){
+  if(!b){return '';}
+  if(b<1048576){return Math.max(1,Math.round(b/1024))+' KB';}
+  return (b/1048576).toFixed(1)+' MB';
+}
+function fileUrl(p){
+  return sb.storage.from('public-papers').getPublicUrl(p.file_path).data.publicUrl;
+}
+
+/* ---------- form option lists ---------- */
+function fillOptions(id,values,selected){
+  $(id).innerHTML=values.map(function(v){return '<option'+(String(v)===String(selected)?' selected':'')+'>'+esc(v)+'</option>';}).join('');
+}
+var yr=new Date().getFullYear(),years=[];
+for(var y=yr;y>=yr-12;y--){years.push(y);}
+fillOptions('#subj',SUBJECTS);
+fillOptions('#grade',GRADES,'12');
+fillOptions('#year',years);
+fillOptions('#kind',KINDS);
+
+/* ---------- filters ---------- */
+function fillSelect(id,allLabel,values,current){
+  var html='<option value="">'+esc(allLabel)+'</option>';
+  values.forEach(function(v){html+='<option value="'+esc(v)+'"'+(String(v)===current?' selected':'')+'>'+esc(v)+'</option>';});
+  $(id).innerHTML=html;
+}
+function buildFilters(){
+  var subs=uniq(papers.map(function(p){return p.subject;})).sort();
+  var kinds=KINDS.filter(function(k){return papers.some(function(p){return p.kind===k;});});
+  var ys=uniq(papers.map(function(p){return String(p.year);})).sort().reverse();
+  fillSelect('#fs','All subjects',subs,filt.subject);
+  fillSelect('#fk','All types',kinds,filt.kind);
+  fillSelect('#fy','All years',ys,filt.year);
+  var g='<button type="button" class="chip" data-grade="" aria-pressed="'+(filt.grade===''?'true':'false')+'">All</button>';
+  GRADES.forEach(function(n){g+='<button type="button" class="chip" data-grade="'+n+'" aria-pressed="'+(filt.grade===n?'true':'false')+'">'+n+'</button>';});
+  $('#grades').innerHTML=g;
+}
+function matches(p){
+  if(filt.grade&&String(p.grade)!==filt.grade){return false;}
+  if(filt.subject&&p.subject!==filt.subject){return false;}
+  if(filt.kind&&p.kind!==filt.kind){return false;}
+  if(filt.year&&String(p.year)!==filt.year){return false;}
+  if(filt.q){
+    var hay=(p.title+' '+p.subject+' '+p.kind+' '+(p.detail||'')+' '+p.year+' grade '+p.grade).toLowerCase();
+    var words=filt.q.toLowerCase().split(/\s+/).filter(Boolean);
+    for(var i=0;i<words.length;i++){if(hay.indexOf(words[i])<0){return false;}}
+  }
+  return true;
+}
+function sorted(list){
+  return list.slice().sort(function(a,b){
+    return (b.year-a.year)||(b.grade-a.grade)||String(a.subject).localeCompare(String(b.subject))||String(a.title).localeCompare(String(b.title));
+  });
+}
+
+/* ---------- render ---------- */
+function renderCount(){
+  var n=papers.length,s=uniq(papers.map(function(p){return p.subject;})).length;
+  $('#count').textContent=n===0?'The kit is empty for now':n+(n===1?' file':' files')+' across '+s+(s===1?' subject':' subjects');
+}
+function renderList(){
+  var list=$('#list'),res=$('#result');
+  if(papers.length===0){
+    res.textContent='';
+    list.innerHTML='<li class="empty"><h2>The kit is being packed</h2><p>No papers are up yet. Add the first one below.</p></li>';
+    return;
+  }
+  var rows=sorted(papers.filter(matches));
+  res.textContent='Showing '+rows.length+' of '+papers.length;
+  if(rows.length===0){
+    list.innerHTML='<li class="empty"><h2>Nothing matches</h2><p>Try a different grade or subject, or clear the filters.</p><button type="button" class="ghost" id="clear">Clear filters</button></li>';
+    return;
+  }
+  var html='';
+  rows.forEach(function(p){
+    var info=[p.subject,p.year];
+    if(p.detail){info.push(p.detail);}
+    var ext=String(p.file_path||'').split('.').pop().toUpperCase();
+    var file=ext+(p.size_bytes?' · '+fmtSize(p.size_bytes):'');
+    html+='<li class="row"><div class="gr" aria-label="Grade '+esc(p.grade)+'"><span>GR</span><b>'+esc(p.grade)+'</b></div>'+
+      '<div class="main"><h3>'+esc(p.title)+'</h3><p class="meta">'+info.map(esc).join(' · ')+'<br>'+esc(file)+'</p></div>'+
+      '<div class="act"><span class="kind">'+esc(p.kind)+'</span>'+
+      '<a class="open" href="'+esc(fileUrl(p))+'" target="_blank" rel="noopener">Open</a></div></li>';
+  });
+  list.innerHTML=html;
+}
+
+async function load(){
+  if(!ready){
+    $('#setup').hidden=false;
+    $('#shareForm').querySelectorAll('input,select,button').forEach(function(el){el.disabled=true;});
+    renderCount();renderList();buildFilters();
+    return;
+  }
+  var r=await sb.from('papers').select('*').eq('status','approved').order('year',{ascending:false});
+  if(r.error){
+    $('#result').textContent='Could not load the papers. Check your connection and refresh.';
+    papers=[];
+  }else{
+    papers=r.data||[];
+  }
+  buildFilters();renderCount();renderList();
+}
+
+/* ---------- events ---------- */
+$('#q').addEventListener('input',function(e){filt.q=e.target.value;renderList();});
+$('#fs').addEventListener('change',function(e){filt.subject=e.target.value;renderList();});
+$('#fk').addEventListener('change',function(e){filt.kind=e.target.value;renderList();});
+$('#fy').addEventListener('change',function(e){filt.year=e.target.value;renderList();});
+$('#grades').addEventListener('click',function(e){
+  var b=e.target.closest('[data-grade]');
+  if(!b){return;}
+  filt.grade=b.getAttribute('data-grade');
+  Array.prototype.forEach.call($('#grades').children,function(c){c.setAttribute('aria-pressed',c===b?'true':'false');});
+  renderList();
+});
+$('#list').addEventListener('click',function(e){
+  if(e.target.id==='clear'){
+    filt={q:'',grade:'',subject:'',kind:'',year:''};
+    $('#q').value='';
+    buildFilters();renderList();
+  }
+});
+
+/* ---------- submit for review ---------- */
+function setMsg(t,cls){var m=$('#msg');m.textContent=t||'';m.className='msg full'+(cls?' '+cls:'');}
+$('#file').addEventListener('change',function(){
+  var f=this.files&&this.files[0];
+  if(f&&!$('#title').value){
+    $('#title').value=f.name.replace(/\.[^.]+$/,'').replace(/_+/g,' ').replace(/\s+/g,' ').trim();
+  }
+});
+$('#shareForm').addEventListener('submit',async function(ev){
+  ev.preventDefault();
+  if(!ready){return;}
+  if($('#website').value){return;} /* bots fill the hidden field */
+  var last=0;try{last=Number(localStorage.getItem('ksk-last-send')||0);}catch(e){}
+  if(Date.now()-last<30000){setMsg('Please wait a few seconds before sending another file.','err');return;}
+  var f=$('#file').files&&$('#file').files[0];
+  var title=$('#title').value.trim();
+  if(!f||!title){setMsg('Choose a file and give it a title.','err');return;}
+  var ext=(f.name.split('.').pop()||'').toLowerCase();
+  if(!MIME[ext]){setMsg('Use a PDF, PNG, JPG or WEBP file.','err');return;}
+  if(f.size>MAX_BYTES){setMsg('That file is over 15 MB. Try compressing it first.','err');return;}
+  var btn=$('#sendBtn');btn.disabled=true;setMsg('Uploading…');
+  var path=(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(16).slice(2))+'.'+ext;
+  var up=await sb.storage.from('incoming').upload(path,f,{contentType:MIME[ext],upsert:false});
+  if(up.error){btn.disabled=false;setMsg('Upload failed. Check your connection and try again.','err');return;}
+  var ins=await sb.from('papers').insert({
+    title:title,subject:$('#subj').value,grade:Number($('#grade').value),year:Number($('#year').value),
+    kind:$('#kind').value,detail:$('#detail').value.trim()||null,submitted_by:$('#by').value.trim()||null,
+    file_path:path,content_type:MIME[ext],size_bytes:f.size,status:'pending'
+  });
+  btn.disabled=false;
+  if(ins.error){setMsg('The file uploaded but the details did not save. Please try again.','err');return;}
+  try{localStorage.setItem('ksk-last-send',String(Date.now()));}catch(e){}
+  $('#shareForm').reset();
+  fillOptions('#grade',GRADES,'12');
+  setMsg('Thanks. Your file is waiting for a moderator to check it.','ok');
+});
+
+load();
+})();
+</script>
+</body>
+</html>

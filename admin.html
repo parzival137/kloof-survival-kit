@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Kloof High Survival Kit Admin</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="stripe" aria-hidden="true"></div>
+<div class="wrap">
+  <header class="head">
+    <p class="eyebrow">Moderator</p>
+    <h1>Review<br>Queue</h1>
+  </header>
+
+  <div id="setup" class="setup" hidden>
+    <strong>Setup needed.</strong> Open <code>config.js</code> and paste your Supabase project URL and anon key.
+  </div>
+
+  <section class="panel" id="loginBox" hidden>
+    <h2 class="sec">Sign in</h2>
+    <p class="note">Use the admin email and password you created in Supabase.</p>
+    <form id="loginForm">
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required></div>
+      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required></div>
+      <div class="full"><button class="btn" type="submit">Sign in</button></div>
+      <p class="msg full" id="loginMsg" role="status"></p>
+    </form>
+  </section>
+
+  <div id="adminBox" hidden>
+    <p class="count"><span id="who"></span> <button type="button" class="ghost" id="signOut">Sign out</button></p>
+
+    <h2 class="sec" style="margin-top:28px">Waiting for review</h2>
+    <p class="msg" id="adminMsg" role="status"></p>
+    <ul class="list queue" id="pending"></ul>
+
+    <h2 class="sec" style="margin-top:44px">Live on the site</h2>
+    <ul class="list queue" id="live"></ul>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+(function(){
+'use strict';
+var cfg=window.KSK_CONFIG||{};
+var ready=!!(cfg.SUPABASE_URL&&cfg.SUPABASE_ANON_KEY&&String(cfg.SUPABASE_URL).indexOf('PASTE')<0&&window.supabase);
+var sb=ready?window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY):null;
+
+function $(s){return document.querySelector(s);}
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function fmtSize(b){
+  if(!b){return '';}
+  if(b<1048576){return Math.max(1,Math.round(b/1024))+' KB';}
+  return (b/1048576).toFixed(1)+' MB';
+}
+function setAdminMsg(t,cls){var m=$('#adminMsg');m.textContent=t||'';m.className='msg'+(cls?' '+cls:'');}
+
+var pendingRows=[],liveRows=[],armed='';
+
+async function refresh(){
+  var r=await sb.from('papers').select('*').order('created_at',{ascending:false});
+  if(r.error){setAdminMsg('Could not load. Are you signed in as the admin?','err');return;}
+  pendingRows=r.data.filter(function(p){return p.status==='pending';});
+  liveRows=r.data.filter(function(p){return p.status==='approved';});
+  await renderPending();
+  renderLive();
+}
+
+async function renderPending(){
+  var ul=$('#pending');
+  if(pendingRows.length===0){
+    ul.innerHTML='<li class="empty"><h2>All clear</h2><p>Nothing is waiting for review.</p></li>';
+    return;
+  }
+  var html='';
+  for(var i=0;i<pendingRows.length;i++){
+    var p=pendingRows[i];
+    var s=await sb.storage.from('incoming').createSignedUrl(p.file_path,3600);
+    var url=s.data&&s.data.signedUrl?s.data.signedUrl:'';
+    var meta=[p.subject,'Grade '+p.grade,p.year,p.kind];
+    if(p.detail){meta.push(p.detail);}
+    html+='<li class="row pend" data-id="'+esc(p.id)+'">'+
+      '<div class="edit"><label for="t-'+esc(p.id)+'">Title</label><input id="t-'+esc(p.id)+'" type="text" maxlength="120" value="'+esc(p.title)+'">'+
+      '<p class="meta">'+meta.map(esc).join(' · ')+'<br>'+esc(fmtSize(p.size_bytes))+(p.submitted_by?' · from '+esc(p.submitted_by):'')+'</p></div>'+
+      '<div class="act">'+(url?'<a class="ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="'+esc(url)+'" target="_blank" rel="noopener">Preview</a>':'<span class="meta">No preview</span>')+
+      '<button type="button" class="btn" data-approve="'+esc(p.id)+'">Approve</button>'+
+      '<button type="button" class="ghost danger" data-reject="'+esc(p.id)+'">'+(armed==='r'+p.id?'Sure? Reject':'Reject')+'</button></div></li>';
+  }
+  ul.innerHTML=html;
+}
+
+function renderLive(){
+  var ul=$('#live');
+  if(liveRows.length===0){
+    ul.innerHTML='<li class="empty"><h2>Nothing live yet</h2><p>Approved files show up here.</p></li>';
+    return;
+  }
+  ul.innerHTML=liveRows.map(function(p){
+    var url=sb.storage.from('public-papers').getPublicUrl(p.file_path).data.publicUrl;
+    return '<li class="row"><div class="main"><h3>'+esc(p.title)+'</h3><p class="meta">'+esc([p.subject,'Grade '+p.grade,p.year,p.kind].join(' · '))+'</p></div>'+
+      '<div class="act"><a class="ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="'+esc(url)+'" target="_blank" rel="noopener">Open</a>'+
+      '<button type="button" class="ghost danger" data-remove="'+esc(p.id)+'">'+(armed==='x'+p.id?'Sure? Remove':'Remove')+'</button></div></li>';
+  }).join('');
+}
+
+async function approve(id){
+  var p=pendingRows.filter(function(x){return x.id===id;})[0];
+  if(!p){return;}
+  var title=($('#t-'+id).value||'').trim()||p.title;
+  setAdminMsg('Approving…');
+  var dl=await sb.storage.from('incoming').download(p.file_path);
+  if(dl.error){setAdminMsg('Could not read the file. Try again.','err');return;}
+  var up=await sb.storage.from('public-papers').upload(p.file_path,dl.data,{contentType:p.content_type,upsert:true});
+  if(up.error){setAdminMsg('Could not publish the file. Try again.','err');return;}
+  var u=await sb.from('papers').update({status:'approved',title:title}).eq('id',id);
+  if(u.error){setAdminMsg('Published the file but could not update its status.','err');return;}
+  await sb.storage.from('incoming').remove([p.file_path]);
+  setAdminMsg('Approved: '+title,'ok');
+  await refresh();
+}
+async function reject(id){
+  var p=pendingRows.filter(function(x){return x.id===id;})[0];
+  if(!p){return;}
+  await sb.storage.from('incoming').remove([p.file_path]);
+  var d=await sb.from('papers').delete().eq('id',id);
+  if(d.error){setAdminMsg('Could not reject. Try again.','err');return;}
+  setAdminMsg('Rejected and deleted.','ok');
+  await refresh();
+}
+async function removeLive(id){
+  var p=liveRows.filter(function(x){return x.id===id;})[0];
+  if(!p){return;}
+  await sb.storage.from('public-papers').remove([p.file_path]);
+  var d=await sb.from('papers').delete().eq('id',id);
+  if(d.error){setAdminMsg('Could not remove. Try again.','err');return;}
+  setAdminMsg('Removed from the site.','ok');
+  await refresh();
+}
+
+$('#pending').addEventListener('click',async function(e){
+  var a=e.target.closest('[data-approve]');
+  if(a){a.disabled=true;await approve(a.getAttribute('data-approve'));return;}
+  var r=e.target.closest('[data-reject]');
+  if(r){
+    var id=r.getAttribute('data-reject');
+    if(armed!=='r'+id){armed='r'+id;await renderPending();return;}
+    armed='';await reject(id);
+  }
+});
+$('#live').addEventListener('click',async function(e){
+  var r=e.target.closest('[data-remove]');
+  if(!r){return;}
+  var id=r.getAttribute('data-remove');
+  if(armed!=='x'+id){armed='x'+id;renderLive();return;}
+  armed='';await removeLive(id);
+});
+
+function show(signedIn,email){
+  $('#loginBox').hidden=signedIn;
+  $('#adminBox').hidden=!signedIn;
+  if(signedIn){$('#who').textContent='Signed in as '+email;refresh();}
+}
+
+$('#loginForm').addEventListener('submit',async function(ev){
+  ev.preventDefault();
+  var m=$('#loginMsg');m.textContent='Signing in…';m.className='msg full';
+  var r=await sb.auth.signInWithPassword({email:$('#email').value.trim(),password:$('#pw').value});
+  if(r.error){m.textContent='Wrong email or password.';m.className='msg full err';return;}
+  $('#pw').value='';
+  show(true,r.data.user.email);
+});
+$('#signOut').addEventListener('click',async function(){
+  await sb.auth.signOut();
+  show(false);
+});
+
+(async function init(){
+  if(!ready){$('#setup').hidden=false;return;}
+  var s=await sb.auth.getSession();
+  if(s.data&&s.data.session){show(true,s.data.session.user.email);}
+  else{show(false);}
+})();
+})();
+</script>
+</body>
+</html>
